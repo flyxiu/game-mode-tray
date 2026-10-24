@@ -36,12 +36,24 @@ jobs:
           dotnet-version: '8.0.x'
 
       # Windows runner 上有桌面运行时，WinForms 项目能正常跑测试
+      # 版本号从 tag 来：推 v1.2.3 时用 1.2.3，手动触发时用填的那个
+      - name: 算版本号
+        id: ver
+        shell: pwsh
+        run: |
+          $tag = "${{ inputs.version || github.ref_name }}"
+          if (-not $tag) { throw "拿不到版本号" }
+          $v = $tag.TrimStart('v')
+          Write-Host "版本号 $v"
+          "value=$v" >> $env:GITHUB_OUTPUT
+
       - name: 跑单元测试
         run: dotnet test tests/GameMode.Core.Tests/GameMode.Core.Tests.csproj -c Release --verbosity normal
 
       - name: 发布单文件
         run: |
           dotnet publish src/GameMode.App/GameMode.App.csproj -c Release `
+            -p:Version=${{ steps.ver.outputs.value }} `
             -r win-x64 --self-contained true `
             -p:PublishSingleFile=true `
             -p:IncludeNativeLibrariesForSelfExtract=true `
@@ -56,6 +68,14 @@ jobs:
           }
           $f = Get-Item out/GameMode.exe
           Write-Host ("产物 {0}，{1:N1} MB" -f $f.Name, ($f.Length / 1MB))
+
+          # 确认版本号真的写进 exe 了，不然后面发出去的包版本是错的
+          $ver = $f.VersionInfo.ProductVersion
+          Write-Host "exe 版本 $ver"
+          if ($ver -notlike "${{ steps.ver.outputs.value }}*") {
+            Write-Error "exe 版本 $ver 跟预期的 ${{ steps.ver.outputs.value }} 对不上"
+            exit 1
+          }
 
       # 每次构建都留一份 artifact，就算不发布版本也能下载来试
       - name: 上传构建产物
