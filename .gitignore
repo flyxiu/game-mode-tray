@@ -1,0 +1,31 @@
+# 用户数据：配置文件跟着机器走，不进版本库
+# 程序首次运行时会自己生成一份默认配置
+app/tray-config.json
+
+# 运行时生成
+app/tray-state.json
+app/tray-log.txt
+app/crash.log
+app/screen.png
+size-trace.txt
+
+# 构建产物。app/ 里只留 exe 和配置，exe 用 publish 重新生成（见 AGENTS.md 的「构建」）
+app/GameMode.exe
+app/*.pdb
+app/*.deps.json
+app/*.runtimeconfig.json
+app/*.dll
+
+# .NET 中间产物
+bin/
+obj/
+
+# 截图与探测产物
+cap/
+.cap/
+probe/
+*.log
+
+# Windows 系统文件
+Thumbs.db
+desktop.ini

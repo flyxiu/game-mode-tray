@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F49AC1"/>
+      <stop offset="1" stop-color="#A882FF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 底板：和主按钮同一套渐变 -->
+  <rect x="6" y="6" width="244" height="244" rx="58" fill="url(#bg)"/>
+
+  <!-- 手柄剪影：三段圆角矩形叠成，16px 下仍能看出是手柄 -->
+  <g fill="#20141E">
+    <rect x="58" y="76" width="140" height="66" rx="33"/>
+    <rect x="46" y="96" width="58" height="86" rx="29"/>
+    <rect x="152" y="96" width="58" height="86" rx="29"/>
+  </g>
+
+  <!-- 十字键与两个按钮，镂空成底色；小尺寸下会糊掉，不影响轮廓 -->
+  <g fill="url(#bg)">
+    <rect x="63" y="118" width="24" height="8" rx="4"/>
+    <rect x="71" y="110" width="8" height="24" rx="4"/>
+    <circle cx="172" cy="114" r="5"/>
+    <circle cx="186" cy="128" r="5"/>
+  </g>
+</svg>
