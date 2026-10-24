@@ -1,4 +1,4 @@
-using System.Drawing.Drawing2D;
+﻿using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using GameMode.Core;
 
@@ -28,6 +28,9 @@ internal sealed class MainForm : Form
     private bool _busy;
     private string _busyText = "";
 
+    /// <summary>提示语自动消失的时间点。为空表示不自动消失（扫描中用）。</summary>
+    private DateTime? _noticeUntil;
+
     private AppEntry? _hoverApp;
 
     // 拖拽不走 OLE DoDragDrop：它会接管消息循环，全自绘窗口拖动时不再重绘。
@@ -36,6 +39,10 @@ internal sealed class MainForm : Form
     private Point _dragStart;
     private bool _dragging;
     private AppList? _dropTarget;
+
+    // 从资源管理器拖文件进来时的状态。和 _dragging 分开：
+    // 那条是程序内图标拖动，这条是 OLE 的 FileDrop，两者互不重叠。
+    private bool _fileDragging;
 
     private int _scrollTray;
     private int _scrollClose;
@@ -47,19 +54,23 @@ internal sealed class MainForm : Form
     // ---------- 布局常量（96 DPI 逻辑像素） ----------
     // 竖向节奏：标题 16 / 副标题 38 / 内存数字 62 / 进度条 104 / 按钮 120
     //          分区 170 / 安全区 396
-    internal const int BaseW = 500;
-    internal const int BaseH = 506;
+    internal const int BaseW = 458;
+    internal const int BaseH = 458;
+
+    // 设置面板贴在齿轮按钮下面，右对齐
+    private const int SettingsW = 236;
+    private const int SettingsH = 118;
 
     private const int TitleY = 16;
-    private const int SubtitleY = 40;
+    private const int SubtitleY = 36;
     private const int MemValueY = 64;
     private const int BarY = 104;
     private const int ActionsY = 120;
     private const int ActionsH = 36;
-    private const int BinsY = 170;
-    private const int BinsH = 210;
-    private const int SafeY = 396;
-    private const int SafeH = 92;
+    private const int BinsY = 166;
+    private const int BinsH = 188;
+    private const int SafeY = 362;
+    private const int SafeH = 78;
 
     private const int GridCols = 4;
     private const int VisibleRows = 3;
@@ -70,9 +81,18 @@ internal sealed class MainForm : Form
 
     private Rectangle Scaled(int x, int y, int w, int h) => new(S(x), S(y), S(w), S(h));
 
-    /// <summary>字号：写逻辑像素，乘缩放比后取整，避免半像素字号发糊。</summary>
+    /// <summary>
+    /// 字号：写逻辑像素，乘缩放比后取整。
+    ///
+    /// 小字号要额外加几像素。150% 缩放下 10 逻辑像素只有 15 个物理像素，
+    /// 汉字的笔画会粘在一起，看着就是「糊」——不是抗锯齿的问题，是字太小。
+    /// 大字号本来就够，不用加，加了会撑破版面。
+    /// </summary>
     private Font UiFont(int logicalPx, FontStyle style = FontStyle.Regular)
-        => Palette.F(Math.Max(9, S(logicalPx)), style);
+    {
+        int px = logicalPx <= 12 ? logicalPx + 2 : logicalPx;
+        return Palette.F(Math.Max(11, S(px)), style);
+    }
 
     /// <summary>两栏宽度。左右分区和两个按钮共用，保证对齐。</summary>
     private static int ColumnWidth => (BaseW - Palette.Margin * 2 - Palette.ColGap) / 2;
@@ -107,6 +127,16 @@ internal sealed class MainForm : Form
 
     // 自绘右键菜单：不用 ContextMenuStrip，因为它跟随系统主题，和玻璃面板不搭
     private readonly List<(Rectangle Rect, string Text, Action Action, bool Enabled, bool Danger)> _menuItems = new();
+
+    // 设置面板。放开机自启和全局快捷键。
+    private bool _settingsOpen;
+    private float _settingsFade;
+
+    /// <summary>正在等用户按下组合键。为 true 时下一次按键被当成绑定，不传给系统。</summary>
+    private bool _recordingHotkey;
+
+    /// <summary>当前注册的热键 id。0 表示没注册。</summary>
+    private int _hotkeyId;
     private bool _menuOpen;
     private Point _menuAt;
     private Rectangle _menuBox;
@@ -129,6 +159,8 @@ internal sealed class MainForm : Form
         // 允许从文件资源管理器拖 exe 进来登记到托盘区
         AllowDrop = true;
         DragEnter += OnFileDragEnter;
+        DragOver += OnFileDragOver;
+        DragLeave += OnFileDragLeave;
         DragDrop += OnFileDrop;
 
         AutoScaleMode = AutoScaleMode.None;
@@ -210,6 +242,18 @@ internal sealed class MainForm : Form
         ClientSize = new Size(S(BaseW), S(BaseH));
         Dbg($"[Shown] Dpi={DeviceDpi} ClientSize={ClientSize}");
         _memTimer.Start();
+
+        // 配置里的自启状态跟注册表可能不一致（比如用户手动删了 Run 键），
+        // 以注册表为准同步一次，别让界面显示的和实际不符
+        bool actualAutoStart = AutoStart.IsEnabled();
+        if (_config.Current.AutoStart != actualAutoStart)
+        {
+            _config.Current.AutoStart = actualAutoStart;
+            _config.Save();
+        }
+
+        ApplyHotkey();
+
         await RescanAsync();
         _scanReady = true;
     }
@@ -244,6 +288,7 @@ internal sealed class MainForm : Form
         busy |= Advance(ref _hoverFade, _hoverApp is not null ? 1f : 0f, 0.16f);
         busy |= Advance(ref _tipFade, ShowTipTarget(), 0.20f);
         busy |= Advance(ref _menuFade, _menuOpen ? 1f : 0f, 0.22f);
+        busy |= Advance(ref _settingsFade, _settingsOpen ? 1f : 0f, 0.22f);
 
         foreach (int id in new[] { 1, 2 })
         {
@@ -255,6 +300,19 @@ internal sealed class MainForm : Form
 
             _buttonHover[id] = h;
             _buttonPress[id] = p;
+        }
+
+        // 提示语到点自己消失
+        if (_noticeUntil is { } until && DateTime.UtcNow >= until)
+        {
+            _noticeUntil = null;
+            if (!_busy) { _busyText = ""; }
+            busy = true;
+        }
+        // 提示还没到点就继续跑定时器，否则文本会一直挂在界面上不消失
+        else if (_noticeUntil is not null)
+        {
+            busy = true;
         }
 
         Invalidate();
@@ -322,7 +380,9 @@ internal sealed class MainForm : Form
             process.Dispose();
         }
 
-        int removed = _apps.RemoveAll(app => !app.ProcessIds.Any(alive.Contains));
+        // WSL 是常驻条目：没运行也要留在托盘区显示成灰的，
+        // 不能按「进程没了就移除」处理——它本来就没有对应的普通进程。
+        int removed = _apps.RemoveAll(app => !app.IsWsl && !app.ProcessIds.Any(alive.Contains));
         if (removed == 0) return;
 
         // 悬停指针可能指着刚移除的应用
@@ -709,6 +769,7 @@ internal sealed class MainForm : Form
         DrawSafe(g);
         DrawDragGhost(g);
         DrawHoverTip(g);
+        DrawSettings(g);
         DrawMenu(g);
     }
 
@@ -759,6 +820,74 @@ internal sealed class MainForm : Form
     /// 自绘右键菜单。不用 ContextMenuStrip：它跟随系统主题，
     /// 在磨砂面板上会出现浅色块，和整体风格不一致。
     /// </summary>
+    /// <summary>设置面板：开机自启开关 + 快捷键绑定。</summary>
+    private void DrawSettings(Graphics g)
+    {
+        float f = _settingsFade;
+        if (f <= 0.01f) return;
+
+        var panel = SettingsPanelRect();
+
+        using (var path = Palette.RoundRect(panel, S(12)))
+        {
+            g.FillPath(Palette.B(Color.FromArgb((byte)(248 * f), 30, 32, 38)), path);
+            using var pen = new Pen(Color.FromArgb((byte)(230 * f), 58, 61, 72), 1f * UiScale);
+            g.DrawPath(pen, path);
+        }
+
+        byte A(int v) => (byte)(v * f);
+
+        g.DrawString("设置", UiFont(10, FontStyle.Bold),
+            Palette.B(Color.FromArgb(A(200), Palette.TextDim)),
+            panel.X + S(12), panel.Y + S(12));
+
+        // —— 开机自启动 ——
+        var auto = AutoStartRowRect();
+        bool on = _config.Current.AutoStart;
+
+        g.DrawString("开机自启动", UiFont(10),
+            Palette.B(Color.FromArgb(A(235), Palette.Text)),
+            auto.X, auto.Y + (auto.Height - UiFont(10).GetHeight(g)) / 2);
+
+        // 开关画成小胶囊，开的时候填强调色
+        int swW = S(34), swH = S(18);
+        var sw = new Rectangle(auto.Right - swW, auto.Y + (auto.Height - swH) / 2, swW, swH);
+        using (var path = Palette.RoundRect(sw, swH / 2))
+        {
+            g.FillPath(Palette.B(on
+                ? Color.FromArgb(A(235), Palette.AccentA)
+                : Color.FromArgb(A(90), 70, 73, 86)), path);
+        }
+
+        int knob = swH - S(4);
+        var knobRect = new Rectangle(on ? sw.Right - knob - S(2) : sw.X + S(2), sw.Y + S(2), knob, knob);
+        using (var path = Palette.RoundRect(knobRect, knob / 2))
+        {
+            g.FillPath(Palette.B(Color.FromArgb(A(255), 240, 242, 248)), path);
+        }
+
+        // —— 快捷键 ——
+        var hot = HotkeyRowRect();
+        g.DrawString("唤起界面", UiFont(10),
+            Palette.B(Color.FromArgb(A(235), Palette.Text)),
+            hot.X, hot.Y + (hot.Height - UiFont(10).GetHeight(g)) / 2);
+
+        string value = _recordingHotkey ? "按下组合键" : _config.Current.Hotkey.Describe();
+        var valueFont = UiFont(10);
+        SizeF vs = g.MeasureString(value, valueFont);
+
+        var box = new Rectangle(hot.Right - (int)vs.Width - S(20), hot.Y + (hot.Height - S(22)) / 2,
+            (int)vs.Width + S(16), S(22));
+        using (var path = Palette.RoundRect(box, S(6)))
+        {
+            g.FillPath(Palette.B(Color.FromArgb(A(_recordingHotkey ? 70 : 40), 60, 64, 78)), path);
+        }
+
+        g.DrawString(value, valueFont,
+            Palette.B(Color.FromArgb(A(230), _recordingHotkey ? Palette.AccentA : Palette.TextDim)),
+            box.X + S(8), box.Y + (box.Height - vs.Height) / 2);
+    }
+
     private void DrawMenu(Graphics g)
     {
         if (_menuFade <= 0.01f) return;
@@ -818,12 +947,104 @@ internal sealed class MainForm : Form
         }
     }
 
+    /// <summary>冒一条几秒后自动消失的提示，避开正在跑的扫描/关闭任务。</summary>
+    private void ShowNotice(string text, int seconds = 4)
+    {
+        _busyText = text;
+        _noticeUntil = DateTime.UtcNow.AddSeconds(seconds);
+        KickAnimation();   // 定时器停着的话提示不会到点消失
+        Invalidate();
+    }
+
+    /// <summary>开机自启开关。以注册表为准回写配置，避免两边不一致。</summary>
+    private void ToggleAutoStart()
+    {
+        bool want = !AutoStart.IsEnabled();
+
+        if (!AutoStart.Set(want))
+        {
+            ShowNotice("改开机自启失败，可能被安全软件拦了");
+            return;
+        }
+
+        _config.Current.AutoStart = want;
+        _config.Save();
+        Invalidate();
+    }
+
+    /// <summary>
+    /// 按配置里的设定注册热键。换绑前先注销旧的，
+    /// 否则旧热键还占着，新热键注册会因为冲突失败。
+    /// </summary>
+    private void ApplyHotkey()
+    {
+        Hotkey.Unregister(Handle, _hotkeyId);
+        _hotkeyId = 0;
+
+        var setting = _config.Current.Hotkey;
+        if (!setting.IsBound) return;
+
+        _hotkeyId = 1;
+        if (!Hotkey.Register(Handle, _hotkeyId, setting.Modifiers, setting.Key))
+        {
+            // 被别的程序占了。提示一下，但不清空配置——
+            // 用户可能只是暂时被占用，下次启动还能成。
+            ShowNotice($"{setting.Describe()} 被占用，热键没生效");
+            _hotkeyId = 0;
+        }
+    }
+
+    /// <summary>齿轮按钮的位置。关闭按钮左边留 6px。</summary>
+    private Rectangle SettingsButtonRect()
+        => Scaled(BaseW - Palette.Margin - 25 - 6 - 25, TitleY + 2, 25, 25);
+
+    /// <summary>设置面板，右边缘跟关闭按钮对齐。</summary>
+    private Rectangle SettingsPanelRect()
+        => Scaled(BaseW - Palette.Margin - SettingsW, TitleY + 2 + 25 + 8, SettingsW, SettingsH);
+
+    /// <summary>面板里的「开机自启动」行。</summary>
+    private Rectangle AutoStartRowRect()
+    {
+        var p = SettingsPanelRect();
+        return new Rectangle(p.X + S(12), p.Y + S(44), p.Width - S(24), S(26));
+    }
+
+    /// <summary>面板里的「快捷键」行。</summary>
+    private Rectangle HotkeyRowRect()
+    {
+        var p = SettingsPanelRect();
+        return new Rectangle(p.X + S(12), p.Y + S(72), p.Width - S(24), S(26));
+    }
+
     private void DrawHeader(Graphics g)
     {
         g.DrawString("游戏模式", UiFont(15, FontStyle.Bold), Palette.B(Palette.Text),
             S(Palette.Margin), S(TitleY));
         g.DrawString("打游戏前腾内存", UiFont(10), Palette.B(Palette.TextFaint),
             S(Palette.Margin), S(SubtitleY));
+
+        // 齿轮按钮，在关闭按钮左边
+        var gear = SettingsButtonRect();
+        using (var path = Palette.RoundRect(gear, S(8)))
+            g.FillPath(Palette.B(Color.FromArgb(42, 44, 51)), path);
+
+        // 齿轮：一圈八个齿 + 中间圆环，纯线条画，跟关闭按钮同一套视觉
+        using (var pen = new Pen(Palette.TextDim, 1.4f * UiScale))
+        {
+            float cx = gear.X + gear.Width / 2f;
+            float cy = gear.Y + gear.Height / 2f;
+            float outer = S(7);
+            float inner = S(5);
+
+            for (int i = 0; i < 8; i++)
+            {
+                double a = Math.PI * 2 * i / 8 - Math.PI / 8;
+                g.DrawLine(pen,
+                    cx + (float)Math.Cos(a) * inner, cy + (float)Math.Sin(a) * inner,
+                    cx + (float)Math.Cos(a) * outer, cy + (float)Math.Sin(a) * outer);
+            }
+            g.DrawEllipse(pen, cx - inner, cy - inner, inner * 2, inner * 2);
+        }
 
         // 关闭按钮，右边距与分区对齐
         var close = Scaled(BaseW - Palette.Margin - 25, TitleY + 2, 25, 25);
@@ -849,10 +1070,12 @@ internal sealed class MainForm : Form
         string rest = $"/ {_totalMB / 1024.0:0.0} GB · 已用 {pct}%";
 
         // 忙碌时把进度文字放在这一行，不额外占版面
-        string right = _busy ? _busyText : rest;
+        // 提示语优先于进度：热键被占用、改自启失败都只靠这一行走提示
+        bool showNotice = _noticeUntil is not null;
+        string right = _busy || showNotice ? _busyText : rest;
         var rightFont = UiFont(10);
         SizeF rightSize = g.MeasureString(right, rightFont);
-        g.DrawString(right, rightFont, Palette.B(_busy ? Palette.AccentA : Palette.TextFaint),
+        g.DrawString(right, rightFont, Palette.B(_busy || showNotice ? Palette.AccentA : Palette.TextFaint),
             ClientSize.Width - S(Palette.Margin) - rightSize.Width, S(MemValueY + 14));
 
         var track = Scaled(Palette.Margin, BarY, BaseW - Palette.Margin * 2, 5);
@@ -926,7 +1149,8 @@ internal sealed class MainForm : Form
     private void DrawBin(Graphics g, Rectangle bounds, string title,
         List<AppEntry> apps, AppList kind, int scroll)
     {
-        bool active = _dropTarget == kind && _dragging;
+        bool active = (_dropTarget == kind && _dragging)
+                      || (kind == AppList.None && _fileDragging);
 
         using (var path = Palette.RoundRect(bounds, S(Palette.RadiusBin)))
             g.FillPath(Palette.B(Color.FromArgb(60, Palette.BinBg)), path);
@@ -941,22 +1165,27 @@ internal sealed class MainForm : Form
         };
 
         var borderColor = active
-            ? (kind == AppList.Close ? Palette.AccentA : Palette.Running)
+            ? kind switch
+            {
+                AppList.Close => Palette.AccentA,
+                AppList.None => Color.FromArgb(200, 255, 255, 255),   // 托盘区：白，不抢安全区的绿
+                _ => Palette.Running,
+            }
             : accent;
 
         using (var path = Palette.RoundRect(bounds, S(Palette.RadiusBin)))
             g.DrawPath(Palette.P(borderColor, (active ? 1.8f : 1f) * UiScale), path);
 
         g.DrawString(title, UiFont(10), Palette.B(Palette.TextDim),
-            bounds.X + S(11), bounds.Y + S(9));
+            bounds.X + S(11), bounds.Y + S(6));
 
         // 右侧：条数 + 合计内存。原型里有，之前漏了
         long totalMB = apps.Where(a => a.IsRunning).Sum(a => a.MemoryMB);
         string summary = apps.Count == 0 ? "" : $"{apps.Count} 条 · {FormatMB(totalMB)}";
-        var summaryFont = UiFont(9);
+        var summaryFont = UiFont(10);
         SizeF summarySize = g.MeasureString(summary, summaryFont);
         g.DrawString(summary, summaryFont, Palette.B(Palette.TextFaint),
-            bounds.Right - S(11) - summarySize.Width, bounds.Y + S(9));
+            bounds.Right - S(11) - summarySize.Width, bounds.Y + S(6));
 
         int tileW = S(Palette.Tile);
         int gap = S(Palette.TileGap);
@@ -1004,7 +1233,9 @@ internal sealed class MainForm : Form
     {
         bool hover = ReferenceEquals(_hoverApp, app) && !_dragging;
         bool beingDragged = _dragging && ReferenceEquals(_dragApp, app);
-        bool dim = !app.IsRunning && kind != AppList.None;
+        // 名单里的项没在跑要灰显。WSL 也算——它常驻托盘区，
+        // 没运行时同样得看得出状态，不能因为不在名单里就不灰。
+        bool dim = !app.IsRunning && (kind != AppList.None || app.IsWsl);
 
         using (var path = Palette.RoundRect(tile, S(Palette.RadiusTile)))
         {
@@ -1104,18 +1335,19 @@ internal sealed class MainForm : Form
             g.DrawPath(Palette.P(borderColor, (active ? 1.5f : 1f) * UiScale), path);
 
         using (var brush = new SolidBrush(Palette.Running))
-            g.FillEllipse(brush, bounds.X + S(11), bounds.Y + S(13), S(5), S(5));
+            g.FillEllipse(brush, bounds.X + S(11), bounds.Y + S(14), S(5), S(5));
 
+        // 字号变大后文字重心偏下，往上挪 2px 才和右边摘要同一视觉基线
         g.DrawString("安全区 · 永不关闭", UiFont(10),
-            Palette.B(Color.FromArgb(217, Palette.Running)), bounds.X + S(21), bounds.Y + S(8));
+            Palette.B(Color.FromArgb(217, Palette.Running)), bounds.X + S(21), bounds.Y + S(7));
 
         var apps = SafeApps;
         long totalMB = apps.Where(a => a.IsRunning).Sum(a => a.MemoryMB);
         string summary = apps.Count == 0 ? "" : $"{apps.Count} 条 · {FormatMB(totalMB)}";
-        var summaryFont = UiFont(9);
+        var summaryFont = UiFont(10);
         SizeF summarySize = g.MeasureString(summary, summaryFont);
         g.DrawString(summary, summaryFont, Palette.B(Palette.TextFaint),
-            bounds.Right - S(11) - summarySize.Width, bounds.Y + S(9));
+            bounds.Right - S(11) - summarySize.Width, bounds.Y + S(6));
 
         int tileW = S(Palette.Tile);
         int gap = S(Palette.TileGap);
@@ -1193,9 +1425,28 @@ internal sealed class MainForm : Form
     /// <summary>从资源管理器拖 exe 进来时给出可放手的光标。</summary>
     private void OnFileDragEnter(object? sender, DragEventArgs e)
     {
+        bool files = e.Data?.GetDataPresent(DataFormats.FileDrop) == true;
+        e.Effect = files ? DragDropEffects.Copy : DragDropEffects.None;
+
+        // 拖着文件经过时把托盘区边框点亮：不然窗口一点反应都没有，
+        // 用户不知道松手会不会登记，也不知道该往哪放。
+        if (files == _fileDragging) return;
+        _fileDragging = files;
+        Invalidate();
+    }
+
+    private void OnFileDragOver(object? sender, DragEventArgs e)
+    {
         e.Effect = e.Data?.GetDataPresent(DataFormats.FileDrop) == true
             ? DragDropEffects.Copy
             : DragDropEffects.None;
+    }
+
+    private void OnFileDragLeave(object? sender, EventArgs e)
+    {
+        if (!_fileDragging) return;
+        _fileDragging = false;
+        Invalidate();
     }
 
     /// <summary>
@@ -1203,6 +1454,9 @@ internal sealed class MainForm : Form
     /// </summary>
     private void OnFileDrop(object? sender, DragEventArgs e)
     {
+        _fileDragging = false;
+        Invalidate();
+
         if (e.Data?.GetData(DataFormats.FileDrop) is not string[] files) return;
 
         int added = 0;
@@ -1219,7 +1473,12 @@ internal sealed class MainForm : Form
             if (_config.AddTracked(exe)) added++;
         }
 
-        if (added == 0) return;
+        if (added == 0)
+        {
+            // 拖进来的不是 exe / 快捷方式，或者已经登记过
+            Toast("没有可登记的程序");
+            return;
+        }
 
         _ = RescanAsync();
         Toast($"已登记 {added} 个应用");
@@ -1357,6 +1616,22 @@ internal sealed class MainForm : Form
             return;
         }
 
+        // 设置面板打开时，鼠标在面板范围内不参与图标悬停
+        if (_settingsOpen && _settingsFade > 0.5f && SettingsPanelRect().Contains(e.Location))
+        {
+            if (_hoverApp is not null)
+            {
+                _hoverApp = null;
+                _hoverFade = 0f;
+                UpdateHoverTip(null, null);
+                KickAnimation();
+                Invalidate();
+            }
+            Cursor = AutoStartRowRect().Contains(e.Location) || HotkeyRowRect().Contains(e.Location)
+                ? Cursors.Hand : Cursors.Default;
+            return;
+        }
+
         // 按钮悬停
         int btn = HitButton(e.Location);
         if (btn != _hoverButton)
@@ -1415,6 +1690,44 @@ internal sealed class MainForm : Form
         }
 
         if (e.Button != MouseButtons.Left) return;
+
+        // 齿轮：开合设置面板
+        if (SettingsButtonRect().Contains(e.Location))
+        {
+            _settingsOpen = !_settingsOpen;
+            if (!_settingsOpen) _recordingHotkey = false;
+            KickAnimation();
+            Invalidate();
+            return;
+        }
+
+        // 设置面板打开时，点击优先作用于面板
+        if (_settingsOpen && _settingsFade > 0.5f)
+        {
+            if (AutoStartRowRect().Contains(e.Location))
+            {
+                ToggleAutoStart();
+                return;
+            }
+
+            if (HotkeyRowRect().Contains(e.Location))
+            {
+                _recordingHotkey = !_recordingHotkey;
+                Invalidate();
+                return;
+            }
+
+            if (SettingsPanelRect().Contains(e.Location))
+                return;   // 点在面板空白处，不做别的
+
+            // 点面板外面就关掉。必须 return——不然这一下会继续落到关闭按钮上，
+            // 用户想收面板却把窗口收进了托盘
+            _settingsOpen = false;
+            _recordingHotkey = false;
+            KickAnimation();
+            Invalidate();
+            return;
+        }
 
         if (Scaled(BaseW - Palette.Margin - 25, TitleY + 2, 25, 25).Contains(e.Location))
         {
@@ -1548,11 +1861,35 @@ internal sealed class MainForm : Form
         void Add(string text, Action action, bool enabled = true, bool danger = false)
             => _menuItems.Add((Rectangle.Empty, text, action, enabled, danger));
 
+        // 单独开关这一个应用，不用整轮「开始游戏 / 结束游戏」。
+        // WSL 也能用，走的是 wsl --shutdown 与拉起默认发行版。
         if (app.IsProtected)
         {
             Add("在保护名单里，不能关闭", () => { }, enabled: false);
         }
+        else if (app.IsRunning)
+        {
+            Add(app.IsWsl ? "关闭 WSL" : "关闭这个应用", async () =>
+            {
+                CloseMenu();
+                var (ok, msg) = await _runner.CloseOneAsync(app, CancellationToken.None);
+                ShowNotice(msg);
+                _ = RescanAsync();
+            }, danger: true);
+        }
         else
+        {
+            Add(app.IsWsl ? "启动 WSL" : "启动这个应用", async () =>
+            {
+                CloseMenu();
+                var (ok, msg) = await _runner.LaunchOneAsync(app, CancellationToken.None);
+                ShowNotice(msg);
+                _ = RescanAsync();
+            });
+        }
+
+        // 保护名单整组不可操作；提示项在上面只出现一次，别重复画两遍
+        if (!app.IsProtected)
         {
             Add("加入「游戏时关闭」", () => SetList(app.Id, AppList.Close, app.Name, app.ExecutablePath),
                 enabled: app.List != AppList.Close);
@@ -1661,6 +1998,96 @@ internal sealed class MainForm : Form
         // 同上：跳过动画，直接显示最终状态
         _menuFade = 1f;
         Invalidate();
+    }
+
+    /// <summary>
+    /// capture 模式用：假装 WSL 没在运行，看它在托盘区是不是变灰、还在不在第一位。
+    /// 只改渲染时的状态，不动真实 WSL——测试进程自己就跑在里面。
+    /// </summary>
+    public void ShowDemoWslStopped()
+    {
+        foreach (var app in _apps)
+        {
+            if (!app.IsWsl) continue;
+            app.IsRunning = false;
+            app.MemoryMB = 0;
+            app.ProcessIds.Clear();
+            break;
+        }
+        Invalidate();
+    }
+
+    /// <summary>capture 模式用：显示从资源管理器拖文件进来时托盘区的点亮状态。</summary>
+    public void ShowDemoFileDrag()
+    {
+        _fileDragging = true;
+        Invalidate();
+    }
+
+    /// <summary>capture 模式用：把设置面板显示出来。</summary>
+    public void ShowDemoSettings()
+    {
+        _settingsOpen = true;
+        _settingsFade = 1f;
+        Invalidate();
+    }
+
+    /// <summary>热键按下时系统发 WM_HOTKEY 过来，这里把界面叫到前面。</summary>
+    protected override void WndProc(ref Message m)
+    {
+        if (Hotkey.IsHotkeyMessage(ref m))
+        {
+            // 已经在前台就收起来，等于一个开关键；否则显示并聚焦
+            if (Visible && ContainsFocus)
+                Hide();
+            else
+                ShowWindow();
+
+            return;
+        }
+
+        base.WndProc(ref m);
+    }
+
+    /// <summary>
+    /// 录制快捷键。录的时候要把所有按键吃掉，
+    /// 否则 Ctrl+S 这类会先被其它逻辑处理掉。
+    /// </summary>
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (!_recordingHotkey) return base.ProcessCmdKey(ref msg, keyData);
+
+        // Esc 放弃绑定
+        if (keyData == Keys.Escape)
+        {
+            _recordingHotkey = false;
+            Invalidate();
+            return true;
+        }
+
+        var key = keyData & Keys.KeyCode;
+
+        // 只按了修饰键：继续等真正的键，不当作完成
+        if (KeyCode.IsModifierOnly(key)) return true;
+
+        uint mods = Hotkey.ToModifiers(keyData);
+        if (mods == 0)
+        {
+            ShowNotice("要带上 Ctrl / Alt / Shift 才不跟普通输入冲突");
+            return true;
+        }
+
+        _config.Current.Hotkey = new GameMode.Core.HotkeySetting
+        {
+            Modifiers = mods,
+            Key = (uint)key,
+        };
+        _config.Save();
+
+        _recordingHotkey = false;
+        ApplyHotkey();
+        Invalidate();
+        return true;
     }
 
     protected override void OnKeyDown(KeyEventArgs e)

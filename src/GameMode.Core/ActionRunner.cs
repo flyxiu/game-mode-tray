@@ -39,12 +39,17 @@ public sealed class ActionRunner(string configDir)
 
             try
             {
-                // 有 stopCommand 的走命令（WSL 必须这样），否则直接结束进程
-                var cmd = stopCommands.FirstOrDefault(c =>
+                // WSL 必须先处理：它的内存落在 vmmemWSL 里，
+                // 那是系统进程杀不掉，只能整条 wsl --shutdown。
+                if (app.IsWsl)
+                {
+                    await RunCommandAsync("wsl.exe --shutdown", cancel);
+                    log.Add($"{app.Name}：已执行 wsl --shutdown");
+                }
+                // 其他应用看有没有配 stopCommand
+                else if (stopCommands.FirstOrDefault(c =>
                     string.Equals(c.Process, Path.GetFileNameWithoutExtension(app.ExecutablePath),
-                        StringComparison.OrdinalIgnoreCase));
-
-                if (cmd is not null)
+                        StringComparison.OrdinalIgnoreCase)) is { } cmd)
                 {
                     await RunCommandAsync(cmd.Command, cancel);
                     log.Add($"{app.Name}：执行 {cmd.Command}");
@@ -69,6 +74,59 @@ public sealed class ActionRunner(string configDir)
 
         await SaveStateAsync(state, cancel);
         return (state, log);
+    }
+
+    /// <summary>
+    /// 关掉单个应用。右键菜单里的「关闭这个应用」用，不影响会话状态文件——
+    /// 那不是「开始游戏」，结束后不该被「结束游戏」重新拉起来。
+    /// </summary>
+    public async Task<(bool Ok, string Message)> CloseOneAsync(AppEntry app, CancellationToken cancel)
+    {
+        try
+        {
+            if (app.IsWsl)
+            {
+                await RunCommandAsync("wsl.exe --shutdown", cancel);
+                return (true, "WSL 已关闭");
+            }
+
+            await KillAsync(app, cancel);
+            return (true, $"{app.Name} 已关闭");
+        }
+        catch (Exception ex)
+        {
+            return (false, $"关闭失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 启动单个应用。右键菜单里的「启动这个应用」用。
+    /// 启动后同样做静默处理，不让窗口弹到桌面上。
+    /// </summary>
+    public async Task<(bool Ok, string Message)> LaunchOneAsync(AppEntry app, CancellationToken cancel)
+    {
+        try
+        {
+            // WSL 没有「启动」的概念，跑一条空命令把默认发行版拉起来
+            if (app.IsWsl)
+            {
+                await RunCommandAsync("wsl.exe -- true", cancel);
+                return (true, "WSL 已启动");
+            }
+
+            var proc = Process.Start(new ProcessStartInfo(app.ExecutablePath)
+            {
+                UseShellExecute = true,
+                WindowStyle = ProcessWindowStyle.Minimized,
+            });
+
+            await MinimizeWhenReadyAsync(proc, app, cancel);
+            return (true, $"{app.Name} 已启动");
+        }
+        catch (Exception ex)
+        {
+            return (false, $"启动失败：{ex.Message}");
+        }
     }
 
     /// <summary>按状态文件恢复。返回启动成功的名字和需要手动处理的。</summary>

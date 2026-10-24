@@ -50,5 +50,12 @@ public sealed class AppEntry
     /// </summary>
     public bool CanRestore { get; set; }
 
+    /// <summary>
+    /// 这个是 WSL，不是普通应用。它的内存落在 vmmemWSL 里，
+    /// 关闭要走 `wsl --shutdown` 而不是结束进程（vmmem 是系统进程，杀不掉）。
+    /// 界面里固定排第一，没运行也显示，标灰。
+    /// </summary>
+    public bool IsWsl { get; set; }
+
     public override string ToString() => $"{Name} ({MemoryMB} MB, {List}, {(IsRunning ? "运行中" : "未运行")})";
 }

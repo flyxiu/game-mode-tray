@@ -137,8 +137,64 @@ public sealed class ProcessScanner
             apps.Add(entry);
         }
 
-        // 按内存从大到小：用户最想先看到吃内存的
-        return apps.OrderByDescending(a => a.MemoryMB).ToList();
+        // WSL 单独处理：它的内存在 vmmemWSL 里（实测能到 1.5 GB），
+        // 路径在系统目录，走正常扫描会被 IsExcluded 排掉。
+        var wslEntry = BuildWslEntry(snapshot);
+        if (wslEntry is not null)
+        {
+            // 已经在名单里就别重复加
+            apps.RemoveAll(a => a.IsWsl);
+            apps.Add(wslEntry);
+        }
+
+        // 按内存从大到小：用户最想先看到吃内存的。
+        // WSL 例外，固定排第一——它常驻显示，位置不能跟着内存跳。
+        var sorted = apps.OrderByDescending(a => a.MemoryMB).ToList();
+        var wslIndex = sorted.FindIndex(a => a.IsWsl);
+        if (wslIndex > 0)
+        {
+            var wsl = sorted[wslIndex];
+            sorted.RemoveAt(wslIndex);
+            sorted.Insert(0, wsl);
+        }
+
+        return sorted;
+    }
+
+    /// <summary>
+    /// 构造 WSL 条目。有没有在跑看 vmmem* 进程在不在——
+    /// 比启动 wsl.exe --list --running 快得多，那要 100 毫秒以上，
+    /// 而这轮扫描总共才 80 毫秒。
+    /// </summary>
+    private static AppEntry? BuildWslEntry(
+        Dictionary<int, (string? Path, string Name, long MemoryMB, bool HasWindow)> snapshot)
+    {
+        string wslExe = Path.Combine(Environment.SystemDirectory, "wsl.exe");
+        if (!File.Exists(wslExe)) return null;   // 这台机器没装 WSL
+
+        long memoryMB = 0;
+        var pids = new List<int>();
+
+        foreach (var (pid, info) in snapshot)
+        {
+            if (!info.Name.StartsWith("vmmem", StringComparison.OrdinalIgnoreCase)) continue;
+            memoryMB += info.MemoryMB;
+            pids.Add(pid);
+        }
+
+        var entry = new AppEntry
+        {
+            Id = "wsl",
+            Name = "WSL",
+            ExecutablePath = wslExe,
+            IsRunning = pids.Count > 0,
+            MemoryMB = memoryMB,
+            CanRestore = false,   // 关了就等下次用到时系统自己拉起
+            IsWsl = true,
+        };
+
+        foreach (var pid in pids) entry.ProcessIds.Add(pid);
+        return entry;
     }
 
     /// <summary>

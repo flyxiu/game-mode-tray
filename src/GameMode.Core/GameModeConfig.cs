@@ -40,12 +40,63 @@ public sealed class GameModeConfig
     /// <summary>执行关闭时额外跑的 shell 命令，目前只有 WSL 用。</summary>
     public List<StopCommand> StopCommands { get; set; } = new();
 
+    /// <summary>
+    /// 全局快捷键，按一下把界面叫到前面。默认未绑定。
+    /// 存的是 Win32 的虚拟键码与修饰键位，不是字符串——
+    /// 字符串要解析，解析错就是热键静默失效。
+    /// </summary>
+    public HotkeySetting Hotkey { get; set; } = new();
+
+    /// <summary>开机自启。改了会同步写注册表的 Run 键。</summary>
+    public bool AutoStart { get; set; }
+
     public static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         Converters = { new AppRefConverter() },
+    };
+}
+
+/// <summary>全局快捷键。两个都为 0 表示未绑定。</summary>
+public sealed class HotkeySetting
+{
+    /// <summary>修饰键，Win32 的 MOD_* 位掩码：1=Alt 2=Ctrl 4=Shift 8=Win。</summary>
+    public uint Modifiers { get; set; }
+
+    /// <summary>虚拟键码，比如 F9=120。0 表示未绑定。</summary>
+    public uint Key { get; set; }
+
+    /// <summary>计算属性，不该写进 JSON——写进去将来会被当成存储字段读回来。</summary>
+    [JsonIgnore]
+    public bool IsBound => Key != 0;
+
+    /// <summary>给人看的写法，比如 Ctrl+Alt+G。</summary>
+    public string Describe()
+    {
+        if (!IsBound) return "未绑定";
+
+        var parts = new List<string>();
+        if ((Modifiers & 2) != 0) parts.Add("Ctrl");
+        if ((Modifiers & 1) != 0) parts.Add("Alt");
+        if ((Modifiers & 4) != 0) parts.Add("Shift");
+        if ((Modifiers & 8) != 0) parts.Add("Win");
+
+        parts.Add(KeyName(Key));
+        return string.Join("+", parts);
+    }
+
+    private static string KeyName(uint key) => key switch
+    {
+        >= 0x70 and <= 0x87 => $"F{key - 0x6F}",          // F1~F24
+        >= 0x30 and <= 0x39 => ((char)key).ToString(),     // 0~9
+        >= 0x41 and <= 0x5A => ((char)key).ToString(),     // A~Z
+        0x20 => "空格",
+        0x0D => "回车",
+        0x1B => "Esc",
+        0x09 => "Tab",
+        _ => $"#{key}",
     };
 }
 

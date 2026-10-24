@@ -228,6 +228,9 @@ internal static class Program
         if (demo == "tip") form.ShowDemoTip();
         else if (demo == "ghost") form.ShowDemoTip(ghost: true);
         else if (demo == "menu") form.ShowDemoMenu();
+        else if (demo == "settings") form.ShowDemoSettings();
+        else if (demo == "wsl-off") form.ShowDemoWslStopped();
+        else if (demo == "drop") form.ShowDemoFileDrag();
 
         for (int i = 0; i < 6; i++)
         {

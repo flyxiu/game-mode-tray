@@ -8,8 +8,10 @@ internal static class Palette
 {
     // 文字
     public static readonly Color Text = Color.FromArgb(240, 240, 244);
-    public static readonly Color TextDim = Color.FromArgb(150, 150, 160);
-    public static readonly Color TextFaint = Color.FromArgb(105, 105, 115);
+    // 对比度按深色底 (26,28,34) 算，小字要到 4.5:1 以上才看得清。
+    // 原来 TextFaint 是 105，只有 3.14:1，10px 上看着就是一团灰。
+    public static readonly Color TextDim = Color.FromArgb(165, 165, 176);    // 6.98:1
+    public static readonly Color TextFaint = Color.FromArgb(138, 138, 150);  // 4.99:1
 
     // 强调：嘉然粉 → 紫
     public static readonly Color AccentA = Color.FromArgb(244, 154, 193);
@@ -34,7 +36,7 @@ internal static class Palette
     public const int Margin = 16;
     public const int ColGap = 10;
 
-    public const int Tile = 46;
+    public const int Tile = 42;
     public const int TileGap = 6;
     public const int RadiusWindow = 14;
     public const int RadiusBin = 12;
@@ -51,13 +53,54 @@ internal static class Palette
     /// size 是像素，不是磅。用磅在 150% 缩放下会得到 13.5px 这种半像素字号，
     /// GDI 只能取整对齐，小字就发虚。
     /// </summary>
+    /// <summary>
+    /// 界面字体。按顺序挑第一个装了的：
+    ///
+    /// - HarmonyOS Sans SC / MiSans / 思源黑体：免费可商用，专为 UI 设计，
+    ///   字重和字面率比系统雅黑整齐，深色小字更清楚
+    /// - Microsoft YaHei UI：Windows 自带兜底，别人机器上基本都有
+    /// - Segoe UI：最后的最后
+    ///
+    /// 不打包字体进 exe：一个中文字重好几 MB，而这几款都是可以随程序
+    /// 分发的开源字体，用户自己装了就直接用，没装就用系统雅黑，不会显示成方框。
+    /// </summary>
+    private static readonly Lazy<string> UiFamily = new(DetectUiFamily);
+
+    private static string DetectUiFamily()
+    {
+        string[] candidates =
+        {
+            "HarmonyOS Sans SC",
+            "MiSans",
+            "思源黑体",
+            "Source Han Sans SC",
+            "Microsoft YaHei UI",
+            "Segoe UI",
+        };
+
+        foreach (var name in candidates)
+        {
+            try
+            {
+                // 字体不存在时 new FontFamily 会抛异常，比 new Font 可靠
+                using var family = new FontFamily(name);
+                return family.Name;
+            }
+            catch
+            {
+                // 没装，试下一个
+            }
+        }
+
+        return SystemFonts.DefaultFont.Name;
+    }
+
     public static Font F(int pixelSize, FontStyle style = FontStyle.Regular)
     {
         var key = (pixelSize, style);
         if (Fonts.TryGetValue(key, out var f)) return f;
 
-        try { f = new Font("Segoe UI Variable Display", pixelSize, style, GraphicsUnit.Pixel); }
-        catch { f = new Font("Segoe UI", pixelSize, style, GraphicsUnit.Pixel); }
+        f = new Font(UiFamily.Value, pixelSize, style, GraphicsUnit.Pixel);
 
         Fonts[key] = f;
         return f;

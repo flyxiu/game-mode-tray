@@ -14,7 +14,7 @@
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
 
     <!-- 发版时 tools/release.ps1 会自动改这一行，CI 则用 -p:Version= 覆盖 -->
-    <Version>1.0.5</Version>
+    <Version>1.1.0</Version>
 
     <!-- 体积换内存：只保留工作站 GC，关掉服务端 GC 与 ReadyToRun 带来的预热内存 -->
     <ServerGarbageCollection>false</ServerGarbageCollection>
