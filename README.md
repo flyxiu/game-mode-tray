@@ -52,13 +52,19 @@ Windows 上很多软件关掉窗口还会驻留在托盘：聊天工具、音乐
 
 一个应用只能在一个区里，关闭区和安全区互斥。
 
+## 下载
+
+到 [Releases](https://github.com/flyxiu/game-mode-tray/releases) 下最新的 `GameMode.exe`，
+双击即用，不需要安装 .NET。
+
 ## 系统要求
 
 Windows 10 / 11 x64。发布的是单文件自包含包，**不需要安装 .NET 运行时**。
 
 ## 自己构建
 
-需要 [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)。
+也可以直接用预编译版本（见上面的「下载」）。想自己构建的话，需要
+[.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)。
 
 ```powershell
 dotnet publish src/GameMode.App/GameMode.App.csproj -c Release `
