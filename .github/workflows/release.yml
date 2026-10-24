@@ -1,0 +1,83 @@
+name: 构建并发布
+
+# 为什么这个 CI 在 GitHub 而不在 Gitea：
+# Gitea 那边的 runner 是 Linux，构建 Windows 单文件自包含包要下载
+# Microsoft.WindowsDesktop.App.Runtime.win-x64 等运行时包，实测跑十几分钟还没完。
+# 这里的 runner 是 Windows，SDK 和运行时包都走微软的 CDN，几分钟就能出包。
+#
+# 触发方式：
+#   1. 推 tag（v1.2.3）时自动跑并建 Release
+#   2. 手动触发，填一个版本号，它自己打 tag 并建 Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '要发布的版本号，比如 v1.2.3'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: 取代码
+        uses: actions/checkout@v4
+
+      - name: 装 .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # Windows runner 上有桌面运行时，WinForms 项目能正常跑测试
+      - name: 跑单元测试
+        run: dotnet test tests/GameMode.Core.Tests/GameMode.Core.Tests.csproj -c Release --verbosity normal
+
+      - name: 发布单文件
+        run: |
+          dotnet publish src/GameMode.App/GameMode.App.csproj -c Release `
+            -r win-x64 --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -o out/
+
+      - name: 确认产物
+        run: |
+          if (-not (Test-Path out/GameMode.exe)) {
+            Write-Error "没有生成 GameMode.exe"
+            exit 1
+          }
+          $f = Get-Item out/GameMode.exe
+          Write-Host ("产物 {0}，{1:N1} MB" -f $f.Name, ($f.Length / 1MB))
+
+      # 每次构建都留一份 artifact，就算不发布版本也能下载来试
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameMode-win-x64
+          path: out/GameMode.exe
+          retention-days: 30
+
+      - name: 建 Release
+        if: startsWith(github.ref, 'refs/tags/') || inputs.version != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          # 推 tag 触发时用 tag 名；手动触发时用填的版本号
+          tag_name: ${{ inputs.version || github.ref_name }}
+          name: ${{ inputs.version || github.ref_name }}
+          body: |
+            单文件自包含，下载即用，不需要安装 .NET 运行时。
+
+            约 70 MB，体积来自把 .NET 8 运行时打进单文件。
+            拷到任何 Windows 10 / 11 机器双击就能跑。
+          files: out/GameMode.exe
+          draft: false
+          prerelease: false
+          generate_release_notes: true
