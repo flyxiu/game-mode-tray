@@ -115,7 +115,7 @@ Linux 上没有 Windows 桌面运行时。
 | `src/GameMode.App/` | 界面与程序入口 |
 | `src/GameMode.Core/` | 进程扫描、托盘枚举、关闭恢复逻辑 |
 | `tests/` | 单元测试 |
-| `design/` | 界面原型 `ui.html`、图标源 |
+| `design/` | 图标源、界面截图 |
 
 ## License
 
